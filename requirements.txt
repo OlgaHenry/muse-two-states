@@ -1,5 +1,6 @@
-brainflow
+brainflow==5.22.2
 numpy
 scipy
 scikit-learn
 bleak
+# tested with numpy 2.4.6, scipy 1.17.1, scikit-learn 1.9.1, bleak 3.0.2, Python 3 on macOS

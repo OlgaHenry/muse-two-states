@@ -21,7 +21,8 @@ On my own data the pair separated at 86% offline on single 8 s trials (38 trials
    Sensor check, instructions, four warm-up trials, two of each (no feedback, they measure your signal levels),
    then **block 1 with my model and no calibration**: that is the transfer test. Those 16 trials
    also count as your calibration, so **blocks 2 and 3 already use a model trained on you**.
-   The result of every block is written to `summary_yourname.txt` (which model, how many hits).
+   The result of every block is written to `summary_yourname.txt` (which model, how many hits),
+   every trial to `trials_yourname_log.csv`.
 3. **Any later day:** `python two_states.py --user yourname --board s` goes straight to the game,
    trained on all your trials so far. Add `--calibrate` for a fresh calibration round on a bad day.
 4. **Free mode**, once you have a model: `python two_states.py --user yourname --board s --free`
@@ -32,7 +33,8 @@ everything is saved.
 ## How it works
 
 1. **Sensor check:** a black screen shows each of the four sensors live (good / no contact /
-   floating, i.e. not touching the skin). Adjust the headband, press SPACE when it looks good.
+   floating). This is a rough signal check (samples stuck at the extremes, alternating patterns,
+   much noisier than the others), not an impedance measurement; it was tuned on the Athena. Adjust the headband, press SPACE when it looks good.
    The same check comes back in every break.
 2. **Calibration** (first time, or with `--calibrate`): 16 trials of 8 s, half of each task, in a
    random order, about 4 to 5 minutes. The cross does not respond yet.
@@ -73,15 +75,20 @@ Settings > Privacy & Security > Bluetooth, allow Terminal or iTerm). Then:
 
 ```
 python3 -m venv ~/muse-venv
-~/muse-venv/bin/pip install -r requirements.txt
+source ~/muse-venv/bin/activate          # every new terminal: activate it again (Windows: muse-venv\Scripts\activate)
+pip install -r requirements.txt
 ```
+
+The commands below assume the environment is active, so plain `python` is the right one. BrainFlow is
+pinned to 5.22.2, the version this was tested with (older versions may not know the Athena). On Linux,
+tkinter is a separate package (`sudo apt install python3-tk`).
 
 Voice prompts use the macOS `say` command; on other systems the prompts are only printed and shown.
 I have only run it on a Mac with a Muse S Athena.
 
 **With Claude Code** you can paste this: "Set up this repository: make a virtual environment, install
-requirements.txt, check that tkinter imports, run find_muse.py, then run two_states.py with --dry
---mute --windowed to check that everything starts."
+requirements.txt, check that tkinter imports, run find_muse.py, then run `two_states.py --user test --board s --dry
+--mute --windowed` to check that everything starts."
 
 ## Find your headband
 
@@ -140,6 +147,26 @@ their contact still differ, so treat a miss on another model as a question, not 
 
 Only the Muse S Athena has been tested. The Muse S and Muse 2 settings use BrainFlow's board ids and
 should work, but the contact check was tuned on the Athena.
+
+## Honest notes on the numbers
+
+- The "held-out accuracy" shown before a block is a **rough** estimate: whole trials are held out,
+  but the eye regression and each run's average were computed on all trials, and it scores the
+  average of each 8 s trial, while the game accumulates small steps every half second. So it is not
+  the expected hit rate; the hits in `summary_<user>.txt` are the real thing.
+- My 86% comes from tasks I picked on my own data, so for anyone else it is a starting point, not a
+  promise.
+- Feedback starts once a full 3 s window of the trial is available (the model was trained on 3 s
+  windows), so the first 4 s of each trial show no color.
+- The eye regression is used only when both forehead sensors are in contact.
+
+## Files it writes
+
+`trials_<user>.npz` (your trials, written after every trial; dry runs go to `trials_<user>_dry.npz`),
+`trials_<user>_log.csv` (every trial and every X), `summary_<user>.txt` (hits per block),
+`model_<user>.pkl`, `raw_<user>_<time>.csv` (the raw recording with markers: 1 red trial start,
+2 blue trial start, 9 trial end, 7 marked with X). A user name is tied to one headband model; use a
+new name for another model.
 
 ## Tips
 

@@ -29,8 +29,8 @@ are regressed out of the ear channels, and nothing on screen moves, so gaze has 
 
 Free mode (how Olga made the video): YOU pick the state (e.g. draw a card), get into it first,
 and only then press SPACE. The cross then turns red or blue step by step; when one color is
-reached the whole screen fills with it (as in Olga's video), or it gives up after 20 s. Free attempts are not used for training. Needs a trained model (your own,
-or --start-from).
+reached the whole screen fills with it (as in Olga's video), or it gives up after 20 s. Free attempts are not used for training. Needs your own trained model
+(at least 6 usable trials of each kind).
 --name MuseS-XXXX finds that headband by its name (see find_muse.py); --address uses an address directly.
 """
 
@@ -70,21 +70,23 @@ ap.add_argument("--mute", action="store_true")
 ap.add_argument("--windowed", action="store_true")
 A = ap.parse_args()
 
-BOARD = {"athena": BoardIds.MUSE_S_ATHENA_BOARD, "s": BoardIds.MUSE_S_BOARD, "2": BoardIds.MUSE_2_BOARD}[A.board]
-if A.dry:
-    BOARD = BoardIds.SYNTHETIC_BOARD
+_IDS = {"athena": "MUSE_S_ATHENA_BOARD", "s": "MUSE_S_BOARD", "2": "MUSE_2_BOARD"}
+if not hasattr(BoardIds, _IDS[A.board]):
+    raise SystemExit("this BrainFlow version has no %s; install brainflow==5.22.2 (see requirements.txt)" % _IDS[A.board])
+BOARD = BoardIds.SYNTHETIC_BOARD if A.dry else getattr(BoardIds, _IDS[A.board])
 FS = BoardShim.get_sampling_rate(BOARD)
 EEG = BoardShim.get_eeg_channels(BOARD)[:4]        # Muse order: TP9, AF7, AF8, TP10
 NAMES = ["TP9  left ear", "AF7  forehead left", "AF8  forehead right", "TP10 right ear"]
 
-CAL_TRIALS = 4 if A.dry else 16
+CAL_TRIALS = 8 if A.dry else 16
 GAME_TRIALS = 4 if A.dry else 12
 GAME_BLOCKS = 1 if A.dry else 3
 TRIAL, SKIP, WINDOW, STEP = 8.0, 1.0, 3.0, 0.5
 GAIN = 0.16
 PAUSE = (3, 5)
 STAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-BANK = "trials_%s.npz" % A.user
+BANK = "trials_%s%s.npz" % (A.user, "_dry" if A.dry else "")      # dry runs never mix with real trials
+DEVICE = "dry" if A.dry else A.board
 SEG_N = int(TRIAL * FS)
 MEMORIES = ["Recall a warm day at the beach", "Recall a dinner with people you love",
             "Recall a moment when everything worked out", "Recall your favorite walk",
@@ -149,6 +151,8 @@ def fit_eye_coefs(segments):
 
 
 def remove_eyes(x, coefs):
+    if coefs is None:                                    # forehead not usable: no eye regression
+        return x
     x = x.copy(); e = eye_signals(x)
     for ch in (0, 3):
         x[ch] -= coefs[ch] @ e
@@ -158,6 +162,7 @@ def remove_eyes(x, coefs):
 def features(x, channels):
     f, p = welch(x[channels], fs=FS, nperseg=min(x.shape[1], 2 * FS))
     bands = [(4, 8), (8, 13)] + ([(13, 30)] if A.beta else [])
+    p = np.maximum(p, 1e-12)                                      # a flat channel must not give -inf
     out = [np.log(p[:, (f >= lo) & (f < hi)].mean(axis=1)) for lo, hi in bands]
     m = (f >= 4) & (f <= 35) & ~((f >= 7) & (f <= 14))           # 1/f fit, alpha left out
     slope, level = np.polyfit(np.log10(f[m]), np.log10(p[:, m]).T, 1)
@@ -188,7 +193,9 @@ def train(segs, labels, sessions, channels):
     channels = [ch for ch in channels if rails[ch] < 0.05]
     if not channels:
         raise SystemExit("no channel was in contact in the stored trials")
-    coefs = fit_eye_coefs(list(segs))
+    if min(np.sum(labels == 0), np.sum(labels == 1)) < 4:
+        raise SystemExit("not enough usable trials of each kind (need at least 4 red and 4 blue not marked with X)")
+    coefs = fit_eye_coefs(list(segs)) if (1 in channels and 2 in channels) else None
     W = [np.array(windows_of(x, coefs, channels)) for x in segs]
     overall = np.concatenate(W).mean(0)
     means = {}
@@ -203,10 +210,11 @@ def train(segs, labels, sessions, channels):
     model = make_pipeline(StandardScaler(), LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto"))
     model.fit(X, y)
     scale = float(np.std(model.decision_function(X))) or 1.0
+    # rough estimate: whole trials held out, but eye regression and session averages saw all trials
     TX = np.array([(W[i] - centre(i)).mean(0) for i in range(len(W))])
-    k = max(2, min(5, int(min(np.sum(labels == 0), np.sum(labels == 1)))))
+    k = int(min(5, min(np.sum(labels == 0), np.sum(labels == 1)) // 2))
     acc = cross_val_score(make_pipeline(StandardScaler(), LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")),
-                          TX, labels, cv=StratifiedKFold(k, shuffle=True, random_state=0)).mean()
+                          TX, labels, cv=StratifiedKFold(k, shuffle=True, random_state=0)).mean() if k >= 2 else float("nan")
     latest = max(means) if means else None
     return {"model": model, "coefs": coefs, "channels": channels, "scale": scale, "cv_acc": acc, "n": len(labels),
             "beta": A.beta, "means": means, "overall": overall,
@@ -235,9 +243,11 @@ class Transferred:
             raise SystemExit("this model was trained %s beta; run with%s --beta" % ("with" if m["beta"] else "without", "" if m["beta"] else "out"))
         self.seen = []
         self.coefs = None
+        self.frozen = False
 
     def add(self, feats):
-        self.seen.extend(feats)
+        if not self.frozen:                              # scaling is fixed after the warm-up (a clean test)
+            self.seen.extend(feats)
 
     def decision_function(self, X):
         S = np.array(self.seen); mu, sd = S.mean(0), S.std(0) + 1e-9
@@ -248,6 +258,9 @@ def load_bank():
     if os.path.exists(BANK):
         z = np.load(BANK, allow_pickle=True)
         n = len(z["labels"])
+        saved = str(z["device"]) if "device" in z else DEVICE
+        if saved != DEVICE or ("fs" in z and int(z["fs"]) != FS):
+            raise SystemExit("user %s has trials recorded with board %s; use another --user for board %s" % (A.user, saved, DEVICE))
         return {"segs": list(z["segs"]), "labels": list(z["labels"]),
                 "sessions": list(z["sessions"]) if "sessions" in z else ["old"] * n,
                 "bad": list(z["bad"]) if "bad" in z else [False] * n}
@@ -255,8 +268,20 @@ def load_bank():
 
 
 def save_bank(bank):
-    np.savez(BANK, segs=np.array(bank["segs"]), labels=np.array(bank["labels"]),
-             sessions=np.array(bank["sessions"]), bad=np.array(bank["bad"]))
+    tmp = BANK + ".tmp.npz"                                  # write, then swap: a crash never leaves half a file
+    np.savez(tmp, segs=np.array(bank["segs"]), labels=np.array(bank["labels"]), sessions=np.array(bank["sessions"]),
+             bad=np.array(bank["bad"]), device=DEVICE, fs=FS)
+    os.replace(tmp, BANK)
+
+
+def counts(bank):
+    labs = [bank["labels"][i] for i in range(len(bank["labels"])) if not bank["bad"][i]]
+    return labs.count(0), labs.count(1)
+
+
+def enough(bank, each=6):
+    """Enough usable trials of BOTH kinds to train a model on."""
+    return min(counts(bank)) >= each
 
 
 def good(bank):
@@ -391,9 +416,20 @@ def run():
         params.mac_address = A.address
     params.timeout = 20
     board = BoardShim(BOARD, params)
-    board.prepare_session(); board.start_stream()
     screen = None
+    current = {"live": None}                              # the model in use, for undoing a trial marked with X
+    log_name = "trials_%s%s_log.csv" % (A.user, "_dry" if A.dry else "")
+
+    def log(row):
+        new = not os.path.exists(log_name)
+        with open(log_name, "a") as f:
+            if new:
+                f.write("session,unix_time,event,task,hit\n")
+            f.write(",".join(str(x) for x in row) + "\n")
+
     try:
+        board.prepare_session()
+        board.start_stream(900000)                        # about an hour at 256 Hz kept for the raw file
         time.sleep(5)
         screen = Screen()
         channels = list(range(4)) if A.dry else screen.contact(board)
@@ -405,6 +441,14 @@ def run():
             if x_ok["on"] and bank["bad"] and bank["sessions"][-1] == STAMP and not bank["bad"][-1]:
                 bank["bad"][-1] = True
                 save_bank(bank)
+                log((STAMP, round(time.time(), 2), "marked_X", "", ""))
+                try:
+                    board.insert_marker(7)
+                except Exception:
+                    pass
+                live = current["live"]
+                if isinstance(live, dict) and not isinstance(live.get("model"), Transferred):
+                    live["offset"] = session_offset(live, bank)   # the marked trial no longer counts
                 screen.text(bottom="marked: the last trial will not be used for training")
                 print("   last trial marked with X")
         screen.root.bind("<KeyPress-x>", mark_bad)
@@ -436,27 +480,33 @@ def run():
             text = task_text(side)
             screen.text(top="%s   %s" % (word, text), bottom="")
             say("%s. %s" % (word.capitalize(), text))
+            current["live"] = live
+            board.insert_marker(1 if side == "left" else 2)    # trial start in the raw file: 1 red, 2 blue
             t0, pos = time.time(), 0.0
             while time.time() - t0 < TRIAL:
                 screen.wait(STEP)
-                if live is None or time.time() - t0 < SKIP + 1.0:
+                if live is None or time.time() - t0 < SKIP + WINDOW:   # feedback only from a full 3 s window
                     continue
-                n = int(min(time.time() - t0 - SKIP, WINDOW) * FS)
+                n = int(WINDOW * FS)
                 raw = board.get_current_board_data(n + 2 * FS)[EEG]
+                if raw.shape[1] < n + FS or not np.isfinite(raw).all():
+                    continue                                   # samples missing: skip this step
                 clean = remove_eyes(prep(raw), live["coefs"])[:, -n:]
                 dec = live["model"].decision_function([features(clean, live["channels"]) - live.get("offset", 0)])[0]
                 pos = float(np.clip(pos + GAIN * np.tanh(dec / live["scale"]), -1, 1))
                 screen.show(pos)
             seg = board.get_current_board_data(SEG_N)[EEG]
+            board.insert_marker(9)                             # trial end
             say("Stop.")                               # a clear end of every trial (as in Olga's recordings)
             hit = None
             if live is not None:
-                hit = (pos > 0) == (side == "right")
+                hit = pos != 0 and (pos > 0) == (side == "right")   # no movement at all counts as a miss
                 screen.text(bottom="hit" if hit else "miss")
             if seg.shape[1] >= SEG_N:
                 bank["segs"].append(seg[:, :SEG_N]); bank["labels"].append(1 if side == "right" else 0)
                 bank["sessions"].append(STAMP); bank["bad"].append(False)
                 save_bank(bank)                                   # after every trial, so Q loses nothing
+                log((STAMP, round(time.time(), 2), kind, "count" if side == "left" else "memory", hit))
                 x_ok["on"] = True
                 if isinstance(live, dict) and isinstance(live.get("model"), Transferred):
                     live["model"].add(windows_of(seg[:, :SEG_N], live["coefs"], live["channels"]))
@@ -501,7 +551,11 @@ def run():
                 while time.time() - t0 < 20:
                     screen.wait(STEP)
                     n = int(WINDOW * FS)
+                    if time.time() - t0 < WINDOW:
+                        continue
                     raw = board.get_current_board_data(n + 2 * FS)[EEG]
+                    if raw.shape[1] < n + FS or not np.isfinite(raw).all():
+                        continue
                     clean = remove_eyes(prep(raw), live["coefs"])[:, -n:]
                     pos = float(np.clip(pos + GAIN * np.tanh(live["model"].decision_function([features(clean, live["channels"]) - live.get("offset", 0)])[0] / live["scale"]), -1, 1))
                     screen.show(pos)
@@ -521,9 +575,9 @@ def run():
         if A.free:
             if A.start_from:
                 raise SystemExit("free mode uses your own model; play the game with --start-from first")
-            if len(good(bank)[1]) < 12:
-                raise SystemExit("Free mode needs a trained model: user %s has %d usable trials, at least 12 are needed.\n"
-                                 "Run the calibration and the game first (the same command without --free)." % (A.user, len(good(bank)[1])))
+            if not enough(bank):
+                raise SystemExit("Free mode needs a trained model: user %s has %d red and %d blue usable trials, at least 6 of each are needed.\n"
+                                 "Run the calibration and the game first (the same command without --free)." % ((A.user,) + counts(bank)))
             screen.text(top="training your model…")
             free_mode(train(*good(bank), channels))
         if A.start_from:
@@ -546,11 +600,12 @@ def run():
             transfer.coefs = fit_eye_coefs(warm)
             for s in warm:
                 transfer.add(windows_of(s, transfer.coefs, transfer.channels))
-        elif A.calibrate or len(good(bank)[1]) < 12:
+            transfer.frozen = True                           # from here on your scaling stays fixed
+        elif A.calibrate or not enough(bank):
             calibrate()
 
         for block in range(GAME_BLOCKS):
-            if transfer is not None and len(good(bank)[1]) < 12:
+            if transfer is not None and not enough(bank):
                 live = {"model": transfer, "coefs": transfer.coefs, "channels": transfer.channels, "scale": transfer.scale}
                 print("block %d with the loaded model (its own held-out accuracy %.0f%% on %d trials)" % (block + 1, 100 * transfer.cv_acc, transfer.n))
                 label = "Olga's model, no calibration"
@@ -587,16 +642,14 @@ def run():
     finally:
         if screen is not None:
             screen.close()
-        save_bank(bank)
-        try:
-            DataFilter.write_file(board.get_board_data(), "raw_%s_%s.csv" % (A.user, STAMP), "w")
-        except Exception as e:
-            print("could not save raw data:", e)
-        print("saved: %s (%d trials, %d marked with X) and raw_%s_%s.csv" % (BANK, len(bank["labels"]), sum(bank["bad"]), A.user, STAMP))
-        try:
-            board.stop_stream(); board.release_session()
-        except Exception:
-            pass
+        for step in (lambda: save_bank(bank),
+                     lambda: DataFilter.write_file(board.get_board_data(), "raw_%s_%s.csv" % (A.user, STAMP), "w"),
+                     board.stop_stream, board.release_session):
+            try:
+                step()
+            except Exception as e:
+                print("  (%s)" % e)
+        print("saved: %s (%d trials, %d marked with X), raw_%s_%s.csv, %s" % (BANK, len(bank["labels"]), sum(bank["bad"]), A.user, STAMP, log_name))
 
 
 if __name__ == "__main__":
