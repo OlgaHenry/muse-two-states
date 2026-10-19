@@ -48,6 +48,23 @@ everything is saved.
 In my recordings the difference between the two states turned out to be mostly a tilt of the 1/f
 background behind the right ear (more slow, less fast activity while remembering), not an alpha peak.
 
+## How the model learns from your trials (and what to do with bad ones)
+
+- Every trial is stored with the task that was **on the screen** (count = red, memory = blue), not
+  with whether it was a hit. Hits and misses are never used for training.
+- So the model **believes every label**: if the screen said "count" and your mind wandered, it still
+  learns that trial as "count". A few such trials only blur the boundary; many of them teach it noise.
+- **Press X right after a trial** (during the pause, or in the break that follows) if you were not
+  really in the state. That trial stays in the file but is never used for training. Only the last
+  trial can be marked.
+- **Test runs:** if you are just trying the program out and not concentrating, use a separate user
+  name (for example `--user test`), so those trials never mix with your real ones.
+- **Day to day:** the signal shifts between days more than between the two states. So every run of
+  the program is first centered on its own average before training (a run needs at least 2 good
+  trials of each kind for that). At the start of a new day, until the game has 2 trials of each kind,
+  the previous run's average is used; from then on the current run's.
+- After every block of 12 the model is retrained on all your good trials from all days.
+
 ## Install
 
 You need Python 3.10 or newer with tkinter (the python.org installer has it; with Homebrew Python
@@ -131,7 +148,7 @@ should work, but the contact check was tuned on the Athena.
 - Good contact behind the ears matters most. If a sensor shows ✗ on the contact screen, adjust the
   headband, or slightly wet the sensors (or the skin and hair under them) with a little water.
 - It works much worse when tired: late in the evening my two states dropped to chance.
-- The signal shifts from day to day; a few new trials on a new day help.
+- The signal shifts from day to day; the program centers every run on its own average (see above).
 
 ## If it does not work for you
 

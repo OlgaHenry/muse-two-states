@@ -12,8 +12,9 @@ Three ways to run it (your trials are kept per user in trials_<user>.npz):
                     trials (no feedback) measure your own signal levels; her model's direction
                     is then applied to your features scaled to you. Your trials are stored, and
                     once you have 12 of them the game switches to your own model.
-After every block of 12 the model is retrained on all your trials.
-Q quits at any moment; everything recorded so far is saved (the bank is written after every trial).
+After every block of 12 the model is retrained on all your good trials; each run is first centered
+on its own average (the signal shifts from day to day). X right after a trial = I was not in the
+state, never train on it. Q quits at any moment; everything recorded so far is saved (the bank is written after every trial).
 
 What the model looks at (per 3 s window, from 4 Hz up): theta and alpha log power and the
 1/f background (slope and level) of each channel; beta is left out by default because on the
@@ -178,24 +179,48 @@ def stuck(x):
     return float(np.mean((x == lo) | (x == hi)))
 
 
-def train(segs, labels, channels):
-    rails = [np.mean([stuck(s[ch]) for s in segs]) for ch in range(4)]
+def train(segs, labels, sessions, channels):
+    """Shrinkage LDA on all good trials. Each session (one run of the program) is first centered on
+    its own average, because the signal shifts from day to day more than between the two states
+    (Olga's finding); a session needs at least 2 trials of each kind to have its own average,
+    otherwise the average of all trials is used."""
+    rails = [np.mean([stuck(x[ch]) for x in segs]) for ch in range(4)]
     channels = [ch for ch in channels if rails[ch] < 0.05]
     if not channels:
         raise SystemExit("no channel was in contact in the stored trials")
     coefs = fit_eye_coefs(list(segs))
-    X, y = [], []
-    for s, lab in zip(segs, labels):
-        for w in windows_of(s, coefs, channels):
-            X.append(w); y.append(lab)
+    W = [np.array(windows_of(x, coefs, channels)) for x in segs]
+    overall = np.concatenate(W).mean(0)
+    means = {}
+    for ses in set(sessions):
+        idx = [i for i, t in enumerate(sessions) if t == ses]
+        labs = [labels[i] for i in idx]
+        if labs.count(0) >= 2 and labs.count(1) >= 2:
+            means[ses] = np.concatenate([W[i] for i in idx]).mean(0)
+    centre = lambda i: means.get(sessions[i], overall)
+    X = np.concatenate([W[i] - centre(i) for i in range(len(W))])
+    y = np.concatenate([[labels[i]] * len(W[i]) for i in range(len(W))])
     model = make_pipeline(StandardScaler(), LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto"))
-    model.fit(np.array(X), np.array(y))
-    scale = float(np.std(model.decision_function(np.array(X)))) or 1.0
-    TX = np.array([np.mean(windows_of(s, coefs, channels), axis=0) for s in segs])
+    model.fit(X, y)
+    scale = float(np.std(model.decision_function(X))) or 1.0
+    TX = np.array([(W[i] - centre(i)).mean(0) for i in range(len(W))])
     k = max(2, min(5, int(min(np.sum(labels == 0), np.sum(labels == 1)))))
     acc = cross_val_score(make_pipeline(StandardScaler(), LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")),
                           TX, labels, cv=StratifiedKFold(k, shuffle=True, random_state=0)).mean()
-    return {"model": model, "coefs": coefs, "channels": channels, "scale": scale, "cv_acc": acc, "n": len(labels), "beta": A.beta}
+    latest = max(means) if means else None
+    return {"model": model, "coefs": coefs, "channels": channels, "scale": scale, "cv_acc": acc, "n": len(labels),
+            "beta": A.beta, "means": means, "overall": overall,
+            "offset": means.get(STAMP, means[latest] if latest else overall)}
+
+
+def session_offset(live, bank):
+    """This run's own average as soon as it has 2 good trials of each kind; until then the
+    latest earlier session's average."""
+    idx = [i for i in range(len(bank["labels"])) if bank["sessions"][i] == STAMP and not bank["bad"][i]]
+    labs = [bank["labels"][i] for i in idx]
+    if labs.count(0) >= 2 and labs.count(1) >= 2:
+        return np.concatenate([windows_of(bank["segs"][i], live["coefs"], live["channels"]) for i in idx]).mean(0)
+    return live["offset"]
 
 
 class Transferred:
@@ -222,12 +247,24 @@ class Transferred:
 def load_bank():
     if os.path.exists(BANK):
         z = np.load(BANK, allow_pickle=True)
-        return {"segs": list(z["segs"]), "labels": list(z["labels"])}
-    return {"segs": [], "labels": []}
+        n = len(z["labels"])
+        return {"segs": list(z["segs"]), "labels": list(z["labels"]),
+                "sessions": list(z["sessions"]) if "sessions" in z else ["old"] * n,
+                "bad": list(z["bad"]) if "bad" in z else [False] * n}
+    return {"segs": [], "labels": [], "sessions": [], "bad": []}
 
 
 def save_bank(bank):
-    np.savez(BANK, segs=np.array(bank["segs"]), labels=np.array(bank["labels"]))
+    np.savez(BANK, segs=np.array(bank["segs"]), labels=np.array(bank["labels"]),
+             sessions=np.array(bank["sessions"]), bad=np.array(bank["bad"]))
+
+
+def good(bank):
+    """Trials that count for training: everything not marked with X."""
+    idx = [i for i in range(len(bank["labels"])) if not bank["bad"][i]]
+    return (np.array([bank["segs"][i] for i in idx]), np.array([bank["labels"][i] for i in idx]),
+            [bank["sessions"][i] for i in idx])
+
 
 # ---------------------------------------------------------------- screen
 
@@ -344,7 +381,7 @@ class Screen:
 def run():
     bank = load_bank()
     left_word, right_word = "RED", "BLUE"
-    print("user %s: %d trials in the bank" % (A.user, len(bank["labels"])))
+    print("user %s: %d trials in the bank, %d marked with X" % (A.user, len(bank["labels"]), sum(bank["bad"])))
     params = BrainFlowInputParams()
     if A.name and not A.address:
         from find_muse import address_of
@@ -362,6 +399,14 @@ def run():
         channels = list(range(4)) if A.dry else screen.contact(board)
         if len(channels) < 2:
             raise SystemExit("fewer than two channels have contact; adjust the headband and try again")
+        def mark_bad(event=None):
+            if bank["bad"] and bank["sessions"][-1] == STAMP and not bank["bad"][-1]:
+                bank["bad"][-1] = True
+                save_bank(bank)
+                screen.text(bottom="marked: the last trial will not be used for training")
+                print("   last trial marked with X")
+        screen.root.bind("<KeyPress-x>", mark_bad)
+
         def instructions(text, spoken=None):
             """Text stays on screen until SPACE (her remark: the first instruction flashed by too fast)."""
             screen.text(top=text, bottom="press SPACE when you are ready")
@@ -376,7 +421,8 @@ def run():
         instructions("RED = count backwards (for example 734, 727, 720...)\n"
                      "BLUE = recall a pleasant memory in detail\n\n"
                      "Keep your eyes on the cross, face and jaw relaxed, lips still.\n"
-                     "Each trial: read the task, start it right away, keep going for 8 seconds.\n"
+                     "Each trial: read the task, start it right away, keep going until STOP (8 seconds).\n"
+                     "If you were not really in the state, press X right after the trial: it will not be used.\n"
                      "Q quits at any moment, everything is saved.",
                      "Red means counting backwards. Blue means recalling a pleasant memory. "
                      "Keep your eyes on the cross and your jaw relaxed.")
@@ -395,7 +441,7 @@ def run():
                 n = int(min(time.time() - t0 - SKIP, WINDOW) * FS)
                 raw = board.get_current_board_data(n + 2 * FS)[EEG]
                 clean = remove_eyes(prep(raw), live["coefs"])[:, -n:]
-                dec = live["model"].decision_function([features(clean, live["channels"])])[0]
+                dec = live["model"].decision_function([features(clean, live["channels"]) - live.get("offset", 0)])[0]
                 pos = float(np.clip(pos + GAIN * np.tanh(dec / live["scale"]), -1, 1))
                 screen.show(pos)
             seg = board.get_current_board_data(SEG_N)[EEG]
@@ -406,10 +452,14 @@ def run():
                 screen.text(bottom="hit" if hit else "miss")
             if seg.shape[1] >= SEG_N:
                 bank["segs"].append(seg[:, :SEG_N]); bank["labels"].append(1 if side == "right" else 0)
+                bank["sessions"].append(STAMP); bank["bad"].append(False)
                 save_bank(bank)                                   # after every trial, so Q loses nothing
                 if isinstance(live, dict) and isinstance(live.get("model"), Transferred):
                     live["model"].add(windows_of(seg[:, :SEG_N], live["coefs"], live["channels"]))
-            screen.text(top="")
+                elif isinstance(live, dict):
+                    live["offset"] = session_offset(live, bank)
+            screen.text(top="", bottom=("hit" if hit else "miss") + "      X = I was not in the state, do not use this trial" if live is not None
+                        else "X = I was not in the state, do not use this trial")
             screen.wait(random.uniform(*PAUSE)); screen.text(bottom="")
             return hit
 
@@ -449,7 +499,7 @@ def run():
                     n = int(WINDOW * FS)
                     raw = board.get_current_board_data(n + 2 * FS)[EEG]
                     clean = remove_eyes(prep(raw), live["coefs"])[:, -n:]
-                    pos = float(np.clip(pos + GAIN * np.tanh(live["model"].decision_function([features(clean, live["channels"])])[0] / live["scale"]), -1, 1))
+                    pos = float(np.clip(pos + GAIN * np.tanh(live["model"].decision_function([features(clean, live["channels"]) - live.get("offset", 0)])[0] / live["scale"]), -1, 1))
                     screen.show(pos)
                     if abs(pos) >= 1:
                         reached = "right" if pos > 0 else "left"
@@ -467,11 +517,11 @@ def run():
         if A.free:
             if A.start_from:
                 raise SystemExit("free mode uses your own model; play the game with --start-from first")
-            if len(bank["labels"]) < 12:
-                raise SystemExit("Free mode needs a trained model: user %s has %d trials, at least 12 are needed.\n"
-                                 "Run the calibration and the game first (the same command without --free)." % (A.user, len(bank["labels"])))
+            if len(good(bank)[1]) < 12:
+                raise SystemExit("Free mode needs a trained model: user %s has %d usable trials, at least 12 are needed.\n"
+                                 "Run the calibration and the game first (the same command without --free)." % (A.user, len(good(bank)[1])))
             screen.text(top="training your model…")
-            free_mode(train(np.array(bank["segs"]), np.array(bank["labels"]), channels))
+            free_mode(train(*good(bank), channels))
         if A.start_from:
             # the transfer test: Olga's direction, your scaling; two warm-up trials first
             transfer = Transferred(A.start_from)
@@ -490,17 +540,17 @@ def run():
             transfer.coefs = fit_eye_coefs(warm)
             for s in warm:
                 transfer.add(windows_of(s, transfer.coefs, transfer.channels))
-        elif A.calibrate or len(bank["labels"]) < 12:
+        elif A.calibrate or len(good(bank)[1]) < 12:
             calibrate()
 
         for block in range(GAME_BLOCKS):
-            if transfer is not None and len(bank["labels"]) < 12:
+            if transfer is not None and len(good(bank)[1]) < 12:
                 live = {"model": transfer, "coefs": transfer.coefs, "channels": transfer.channels, "scale": transfer.scale}
                 print("block %d with the loaded model (its own held-out accuracy %.0f%% on %d trials)" % (block + 1, 100 * transfer.cv_acc, transfer.n))
                 label = "Olga's model, no calibration"
             else:
                 screen.text(top="training your model…")
-                live = train(np.array(bank["segs"]), np.array(bank["labels"]), channels)
+                live = train(*good(bank), channels)
                 pickle.dump(live, open("model_%s.pkl" % A.user, "wb"))
                 print("your model: %d trials, held-out accuracy %.0f%%" % (live["n"], 100 * live["cv_acc"]))
                 label = "your model, about %.0f%%" % (100 * live["cv_acc"])
@@ -536,7 +586,7 @@ def run():
             DataFilter.write_file(board.get_board_data(), "raw_%s_%s.csv" % (A.user, STAMP), "w")
         except Exception as e:
             print("could not save raw data:", e)
-        print("saved: %s (%d trials) and raw_%s_%s.csv" % (BANK, len(bank["labels"]), A.user, STAMP))
+        print("saved: %s (%d trials, %d marked with X) and raw_%s_%s.csv" % (BANK, len(bank["labels"]), sum(bank["bad"]), A.user, STAMP))
         try:
             board.stop_stream(); board.release_session()
         except Exception:
