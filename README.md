@@ -18,8 +18,8 @@ On my own data the pair separated at 86% offline on single 8 s trials (38 trials
    python two_states.py --user yourname --board s --start-from olga_model.json
    ```
 
-   Sensor check, instructions, two warm-up trials (no feedback, they measure your signal levels),
-   then **block 1 with my model and no calibration**: that is the transfer test. Those 14 trials
+   Sensor check, instructions, four warm-up trials, two of each (no feedback, they measure your signal levels),
+   then **block 1 with my model and no calibration**: that is the transfer test. Those 16 trials
    also count as your calibration, so **blocks 2 and 3 already use a model trained on you**.
    The result of every block is written to `summary_yourname.txt` (which model, how many hits).
 3. **Any later day:** `python two_states.py --user yourname --board s` goes straight to the game,
@@ -54,8 +54,8 @@ background behind the right ear (more slow, less fast activity while remembering
   with whether it was a hit. Hits and misses are never used for training.
 - So the model **believes every label**: if the screen said "count" and your mind wandered, it still
   learns that trial as "count". A few such trials only blur the boundary; many of them teach it noise.
-- **Press X right after a trial** (during the pause, or in the break that follows) if you were not
-  really in the state. That trial stays in the file but is never used for training. Only the last
+- **Press X right after a trial** (in the 3 to 5 s pause before the next cue, or in the break that
+  follows) if you were not really in the state; once the next trial starts, X no longer works. That trial stays in the file but is never used for training. Only the last
   trial can be marked.
 - **Test runs:** if you are just trying the program out and not concentrating, use a separate user
   name (for example `--user test`), so those trials never mix with your real ones.
@@ -131,7 +131,7 @@ python two_states.py --user yourname --board s --start-from olga_model.json
 ```
 
 `olga_model.json` is my trained model: 12 numbers (the direction that separated my two states, over
-AF7, AF8 and TP10) and nothing else, no recordings. Two warm-up trials without feedback measure your own
+AF7, AF8 and TP10) and nothing else, no recordings. Four warm-up trials without feedback (two of each) measure your own
 signal levels; then my direction is applied to your features scaled to you. That tests whether my
 model works on you with no calibration. Your trials are stored as usual, and once you have 12 the game
 switches to a model trained on you. My model was trained on a Muse S Athena. Your features are scaled to

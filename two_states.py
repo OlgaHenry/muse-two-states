@@ -8,7 +8,7 @@ Three ways to run it (your trials are kept per user in trials_<user>.npz):
   any later day     the game straight away, trained on all your earlier trials
   --calibrate       add a fresh round of 16 calibration trials first (e.g. a new day, a bad day)
   --start-from olga_model.json
-                    play with Olga's model, no calibration: the transfer test. Two warm-up
+                    play with Olga's model, no calibration: the transfer test. Four warm-up
                     trials (no feedback) measure your own signal levels; her model's direction
                     is then applied to your features scaled to you. Your trials are stored, and
                     once you have 12 of them the game switches to your own model.
@@ -399,8 +399,10 @@ def run():
         channels = list(range(4)) if A.dry else screen.contact(board)
         if len(channels) < 2:
             raise SystemExit("fewer than two channels have contact; adjust the headband and try again")
+        x_ok = {"on": False}                                 # X only between a trial and the next one
+
         def mark_bad(event=None):
-            if bank["bad"] and bank["sessions"][-1] == STAMP and not bank["bad"][-1]:
+            if x_ok["on"] and bank["bad"] and bank["sessions"][-1] == STAMP and not bank["bad"][-1]:
                 bank["bad"][-1] = True
                 save_bank(bank)
                 screen.text(bottom="marked: the last trial will not be used for training")
@@ -428,6 +430,7 @@ def run():
                      "Keep your eyes on the cross and your jaw relaxed.")
 
         def trial(side, live=None, kind="game"):
+            x_ok["on"] = False
             screen.show(0)
             word = left_word if side == "left" else right_word
             text = task_text(side)
@@ -454,6 +457,7 @@ def run():
                 bank["segs"].append(seg[:, :SEG_N]); bank["labels"].append(1 if side == "right" else 0)
                 bank["sessions"].append(STAMP); bank["bad"].append(False)
                 save_bank(bank)                                   # after every trial, so Q loses nothing
+                x_ok["on"] = True
                 if isinstance(live, dict) and isinstance(live.get("model"), Transferred):
                     live["model"].add(windows_of(seg[:, :SEG_N], live["coefs"], live["channels"]))
                 elif isinstance(live, dict):
@@ -523,7 +527,7 @@ def run():
             screen.text(top="training your model…")
             free_mode(train(*good(bank), channels))
         if A.start_from:
-            # the transfer test: Olga's direction, your scaling; two warm-up trials first
+            # the transfer test: Olga's direction, your scaling; four warm-up trials first
             transfer = Transferred(A.start_from)
             while not A.dry and [c for c in transfer.channels if c not in channels]:
                 need = ", ".join(NAMES[c].split()[0] for c in transfer.channels if c not in channels)
@@ -531,12 +535,14 @@ def run():
                              "Adjust the headband or wet that sensor slightly, then press SPACE." % need,
                              "The loaded model needs %s. Please fix that sensor." % need)
                 channels = screen.contact(board)
-            instructions("TWO WARM-UP TRIALS\n\nthey measure your signal levels for the loaded model.\n"
+            instructions("FOUR WARM-UP TRIALS (two of each)\n\nthey measure your signal levels for the loaded model.\n"
                          "The cross does not respond yet, just do the task shown.",
-                         "Two warm-up trials to measure your signal. The cross does not respond yet.")
+                         "Four warm-up trials to measure your signal. The cross does not respond yet.")
             warm = []
-            for side in shuffle_limited(["left", "right"]):
+            for side in shuffle_limited(["left", "right"] * 2):
                 trial(side, kind="warmup"); warm.append(bank["segs"][-1])
+            warm = [bank["segs"][i] for i in range(len(bank["segs"]))
+                    if bank["sessions"][i] == STAMP and not bank["bad"][i]] or warm      # X-marked warm-ups left out
             transfer.coefs = fit_eye_coefs(warm)
             for s in warm:
                 transfer.add(windows_of(s, transfer.coefs, transfer.channels))
