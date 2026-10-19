@@ -1,0 +1,8 @@
+# personal recordings and models never go into the repository
+*.npz
+*.csv
+*.pkl
+__pycache__/
+!olga_model.json
+two_states_last_error.txt
+summary_*.txt

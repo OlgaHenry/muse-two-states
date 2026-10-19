@@ -1,0 +1,33 @@
+{
+ "what": "Olga Henry, Muse S Athena, LEFT = counting backwards (0), RIGHT = recalling a pleasant memory (1)",
+ "features": "per channel: theta 4-8 log power, alpha 8-13 log power, 1/f slope, 1/f level (4-35 Hz, 7-14 left out); grouped by feature, then channel",
+ "channels": [
+  1,
+  2,
+  3
+ ],
+ "channel_names": [
+  "AF7",
+  "AF8",
+  "TP10"
+ ],
+ "lda_coef": [
+  -2.9733986538811896,
+  -0.9219196431551786,
+  0.32296575643869957,
+  1.455594847797116,
+  0.9073870456104487,
+  2.3064322715152565,
+  -4.269338063957624,
+  0.6226970780032712,
+  -0.9595198533057979,
+  -2.557588196349225,
+  -0.41638722206041184,
+  -0.2332503188400996
+ ],
+ "lda_intercept": -0.22616987132748534,
+ "scale": 3.03825362437173,
+ "cv_acc": 0.8642857142857142,
+ "n": 38,
+ "beta": false
+}

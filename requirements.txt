@@ -1,0 +1,5 @@
+brainflow
+numpy
+scipy
+scikit-learn
+bleak
