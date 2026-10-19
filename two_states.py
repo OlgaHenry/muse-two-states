@@ -551,8 +551,7 @@ def run():
                 while time.time() - t0 < 20:
                     screen.wait(STEP)
                     n = int(WINDOW * FS)
-                    if time.time() - t0 < WINDOW:
-                        continue
+                    # no wait after SPACE: you were already in the state, so the last 3 s are it (Olga's design)
                     raw = board.get_current_board_data(n + 2 * FS)[EEG]
                     if raw.shape[1] < n + FS or not np.isfinite(raw).all():
                         continue

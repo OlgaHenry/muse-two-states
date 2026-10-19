@@ -126,7 +126,8 @@ recording (`raw_<user>_<time>.csv`). SPACE continues after a break.
 This is how I made the video. In the calibration and the game the program tells you which state to
 do and starts the 8 seconds itself. In free mode **you** choose: I drew a card (red or blue), started
 counting or remembering, waited until I was really in it (it is easy to get distracted at the
-start, but once I had started, I had started), and only then pressed SPACE. From that moment the
+start, but once I had started, I had started), and only then pressed SPACE. Because you are already in the state, the program reads the last
+3 s straight away, with no wait. From that moment the
 cross turns red or blue step by step, every half second, toward the state it reads; when a color
 is reached the whole screen fills with it, or it gives up after 20 s. Free attempts are not used for training. Free mode needs a trained
 model, so play the calibration and the game first.
